@@ -1,0 +1,5 @@
+google-cloud-aiplatform==1.75.0
+nbformat==5.10.4
+streamlit==1.41.1
+tqdm==4.67.1
+nbconvert==7.16.4
