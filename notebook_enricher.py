@@ -2,49 +2,33 @@ import json
 from typing import Dict, List, Any, Tuple, Optional
 
 import nbformat
-import vertexai
 from nbformat.v4 import new_code_cell, new_markdown_cell, new_notebook
 from tqdm import tqdm
-from vertexai.preview.generative_models import (
-    GenerativeModel,
+
+from google import genai
+from google.genai.types import (
+    GenerateContentConfig,
     SafetySetting,
-    Tool,
 )
-from vertexai.preview.generative_models import grounding
 
 # Constants for model and safety settings
-MODEL_NAME = "gemini-1.5-pro-002"
-SAFETY_OFF_SETTINGS = [
-    SafetySetting(category=cat, threshold=SafetySetting.HarmBlockThreshold.OFF)
-    for cat in [
-        SafetySetting.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-        SafetySetting.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-        SafetySetting.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-        SafetySetting.HarmCategory.HARM_CATEGORY_HARASSMENT,
-    ]
-]
-GENERATION_CONFIG = {
-    "max_output_tokens": 8192,
-    "temperature": 0.1,
-    "top_k": 40,
-    "top_p": 0.95,
-}
+MODEL_ID = "gemini-2.0-flash-exp"
 
 # JSON schema for notebook structure analysis
 NOTEBOOK_STRUCTURE_SCHEMA = {
-    "type": "OBJECT",
+    "type": "object",
     "properties": {
-        "title": {"type": "STRING"},
-        "introduction": {"type": "STRING"},
+        "title": {"type": "string"},
+        "introduction": {"type": "string"},
         "sections": {
-            "type": "ARRAY",
+            "type": "array",
             "items": {
-                "type": "OBJECT",
+                "type": "object",
                 "properties": {
-                    "title": {"type": "STRING"},
-                    "description": {"type": "STRING"},
-                    "start_cell": {"type": "INTEGER"},
-                    "end_cell": {"type": "INTEGER"},
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "start_cell": {"type": "integer"},
+                    "end_cell": {"type": "integer"},
                 },
                 "required": ["title", "start_cell", "end_cell"],
             },
@@ -53,11 +37,41 @@ NOTEBOOK_STRUCTURE_SCHEMA = {
     "required": ["title", "sections", "introduction"],
 }
 
+GENERATION_CONFIG = GenerateContentConfig(
+    max_output_tokens=8192,
+    temperature=0.1,
+    top_k=40,
+    top_p=0.95,
+    safety_settings=[
+        SafetySetting(
+            category="HARM_CATEGORY_DANGEROUS_CONTENT",
+            threshold="OFF",
+        ),
+        SafetySetting(
+            category="HARM_CATEGORY_HARASSMENT",
+            threshold="OFF",
+        ),
+        SafetySetting(
+            category="HARM_CATEGORY_HATE_SPEECH",
+            threshold="OFF",
+        ),
+        SafetySetting(
+            category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            threshold="OFF",
+        ),
+    ],
+)
+
+
 class NotebookCell:
     """Represents a notebook cell with its content and metadata."""
 
     def __init__(
-        self, source: str, cell_type: str, outputs: Optional[List] = None, index: int = 0
+        self,
+        source: str,
+        cell_type: str,
+        outputs: Optional[List] = None,
+        index: int = 0,
     ) -> None:
         self.source = source
         self.cell_type = cell_type
@@ -67,6 +81,7 @@ class NotebookCell:
     def __repr__(self) -> str:
         return f"NotebookCell(index={self.index}, cell_type='{self.cell_type}')"
 
+
 class NotebookStructure:
     """Holds notebook structure information."""
 
@@ -75,22 +90,17 @@ class NotebookStructure:
         self.introduction: str = ""
         self.sections: List[Dict[str, Any]] = []
 
+
 class NotebookProcessor:
     """Processes Jupyter notebooks to analyze structure and generate documentation."""
 
     def __init__(self, project_id: str, location: str) -> None:
         """Initializes the NotebookProcessor with Vertex AI credentials."""
-        vertexai.init(project=project_id, location=location)
-        self.model = GenerativeModel(
-            MODEL_NAME,
-            tools=[
-                Tool.from_google_search_retrieval(
-                    google_search_retrieval=grounding.GoogleSearchRetrieval()
-                )
-            ],
-        )
+        self.client = genai.Client(vertexai=True, project=project_id, location=location)
 
-    def read_notebook(self, input_path: str) -> Tuple[List[NotebookCell], Dict[str, str]]:
+    def read_notebook(
+        self, input_path: str
+    ) -> Tuple[List[NotebookCell], Dict[str, str]]:
         """Reads a Jupyter notebook and extracts cells and content."""
         try:
             with open(input_path, "r", encoding="utf-8") as f:
@@ -109,7 +119,10 @@ class NotebookProcessor:
                 outputs = getattr(cell, "outputs", []) or []
                 cells.append(
                     NotebookCell(
-                        source=cell.source, cell_type=cell.cell_type, outputs=outputs, index=idx
+                        source=cell.source,
+                        cell_type=cell.cell_type,
+                        outputs=outputs,
+                        index=idx,
                     )
                 )
                 if cell.cell_type == "code":
@@ -117,7 +130,10 @@ class NotebookProcessor:
                 elif cell.cell_type == "markdown":
                     markdown_parts.append(cell.source)
 
-        full_notebook_content = {"code": "\n\n".join(code_parts), "markdown": "\n\n".join(markdown_parts)}
+        full_notebook_content = {
+            "code": "\n\n".join(code_parts),
+            "markdown": "\n\n".join(markdown_parts),
+        }
         return cells, full_notebook_content
 
     def _prepare_code_cells_for_prompt(self, code_cells: List[NotebookCell]) -> str:
@@ -156,7 +172,7 @@ class NotebookProcessor:
         **Goal**:
         1. Suggest a descriptive, technical title for the notebook.
         2. Generate an introduction paragraph that will be added just after the title. This introduction should briefly summarize the notebook's purpose and key topics.
-        3. Divide these code cells into 2–10 logical sections based on functionality, context, and flow.
+        3. Divide these code cells into 2-10 logical sections based on functionality, context, and flow.
         4. For each section, provide:
         - A 'title' (subtitle),
         - A short 'description',
@@ -170,14 +186,14 @@ class NotebookProcessor:
 
         Additionally, here's the entire notebook's code and markdown for background context:
         - Markdown content:
-        \"\"\"markdown
+        ```markdown
         {full_content['markdown']}
-        \"\"\"
+        ```
 
         - Code content:
-        \"\"\"python
+        ```python
         {full_content['code']}
-        \"\"\"
+        ```
 
         Important:
         - The first code_index is 0, the last code_index is {len(code_cells) - 1}.
@@ -186,14 +202,13 @@ class NotebookProcessor:
         """
 
         try:
-            response = self.model.generate_content(
-                prompt,
-                generation_config={
-                    **GENERATION_CONFIG,
-                    "response_mime_type": "application/json",
-                    "response_schema": NOTEBOOK_STRUCTURE_SCHEMA,
-                },
-                safety_settings=SAFETY_OFF_SETTINGS,
+            config = GENERATION_CONFIG.model_copy()
+            config.response_mime_type = "application/json"
+            config.response_schema = NOTEBOOK_STRUCTURE_SCHEMA
+            response = self.client.models.generate_content(
+                model=MODEL_ID,
+                config=config,
+                contents=prompt,
             )
             structure_data: Dict = json.loads(response.text)
             return self._validate_and_create_structure(structure_data, len(code_cells))
@@ -219,7 +234,10 @@ class NotebookProcessor:
             notebook_structure.sections.append(section)
 
         # Ensure coverage of all code cells in the last section if needed
-        if notebook_structure.sections and notebook_structure.sections[-1]["end_cell"] < num_code_cells - 1:
+        if (
+            notebook_structure.sections
+            and notebook_structure.sections[-1]["end_cell"] < num_code_cells - 1
+        ):
             notebook_structure.sections[-1]["end_cell"] = num_code_cells - 1
 
         return notebook_structure
@@ -240,11 +258,16 @@ class NotebookProcessor:
         return default_structure
 
     def generate_section_markdown(
-        self, cells: List[NotebookCell], section_info: Dict, full_content: Dict[str, str]
+        self,
+        cells: List[NotebookCell],
+        section_info: Dict,
+        full_content: Dict[str, str],
     ) -> str:
         """Generates markdown documentation for a section of the notebook."""
         code_cells = [cell for cell in cells if cell.cell_type == "code"]
-        section_code_cells = code_cells[section_info["start_cell"] : section_info["end_cell"] + 1]
+        section_code_cells = code_cells[
+            section_info["start_cell"] : section_info["end_cell"] + 1
+        ]
 
         prompt = f"""
         Generate documentation for this section of the notebook.
@@ -268,7 +291,7 @@ class NotebookProcessor:
         
         Requirements:
         1. Your text should exclusively talk about the Code of this section
-        2. The text you are writing for this section should fit the overall code and overall initial markdown but still be exlusive to the code of the section.
+        2. The text you are writing for this section should fit the overall code and overall initial markdown but still be exclusive to the code of the section.
         3. Focus on the purpose and outcomes rather than line-by-line explanation
         4. Explain concepts and approaches rather than just code functionality
         5. Maintain a narrative flow that connects to the overall notebook purpose
@@ -283,14 +306,23 @@ class NotebookProcessor:
         """
 
         try:
-                response = self.model.generate_content(prompt)
-                return response.text.strip()
+            response = self.client.models.generate_content(
+                model=MODEL_ID,
+                config=GENERATION_CONFIG,
+                contents=prompt,
+            )
+            return response.text.strip()
         except Exception as e:
-            print(f"Error generating section markdown for '{section_info['title']}': {e}")
+            print(
+                f"Error generating section markdown for '{section_info['title']}': {e}"
+            )
             return f"<!-- Error generating markdown: {e} -->\n\n### {section_info['title']}"
 
     def create_structured_notebook(
-        self, cells: List[NotebookCell], structure: NotebookStructure, full_content: Dict[str, str]
+        self,
+        cells: List[NotebookCell],
+        structure: NotebookStructure,
+        full_content: Dict[str, str],
     ) -> nbformat.NotebookNode:
         """Creates a new notebook with structured sections and markdown."""
         new_nb = new_notebook()
@@ -309,7 +341,11 @@ class NotebookProcessor:
         with tqdm(total=len(structure.sections), desc="Processing sections") as pbar:
             for section_idx, section in enumerate(structure.sections):
                 # Generate section documentation
-                section_markdown = self.generate_section_markdown(cells, section, full_content)
+                section_markdown = (
+                    self.generate_section_markdown(cells, section, full_content)
+                    .removeprefix("```markdown")
+                    .removesuffix("```")
+                )
                 new_nb.cells.append(new_markdown_cell(section_markdown))
 
                 # Add only relevant code cells in this section
@@ -328,7 +364,9 @@ class NotebookProcessor:
 
         return new_nb
 
-    def _generate_table_of_contents(self, structure: NotebookStructure) -> nbformat.NotebookNode:
+    def _generate_table_of_contents(
+        self, structure: NotebookStructure
+    ) -> nbformat.NotebookNode:
         """Generates a table of contents markdown cell."""
         toc = "## Table of Contents\n\n"
         for idx, section in enumerate(structure.sections, 1):
@@ -361,12 +399,15 @@ class NotebookProcessor:
         except Exception as e:
             print(f"An unexpected error occurred: {e}")
 
+
 if __name__ == "__main__":
     # Example usage
     project_id = "your-project-id"
     location = "us-central1"
-    input_notebook_path = "test.ipynb" # Replace with your input notebook path
-    output_notebook_path = "test_enriched.ipynb" # Replace with your desired output path
+    input_notebook_path = "test.ipynb"  # Replace with your input notebook path
+    output_notebook_path = (
+        "test_enriched.ipynb"  # Replace with your desired output path
+    )
 
     processor = NotebookProcessor(project_id, location)
     processor.enrich_notebook(input_notebook_path, output_notebook_path)
